@@ -21,8 +21,6 @@ API Visualizer converts an exported `swagger.json` or `openapi.json` file, or a 
 - Local Swagger UI assets in `static/swagger-ui`.
 - Internet access is only needed when using a remote input URL. Generated HTML files do not load Swagger UI assets from a CDN.
 
-No third-party Python packages are required. `requirements.txt` is included for tooling compatibility.
-
 ## Usage
 
 Generate documentation from an OpenAPI export:
@@ -80,12 +78,6 @@ output/<input-or-url-name>/assets/swagger-ui/
 ## Swagger UI Assets
 
 The project keeps built Swagger UI browser assets in `static/swagger-ui`, so `node_modules` and npm are not required to run the generator. If you ever want to upgrade Swagger UI, download or install a newer `swagger-ui-dist` package separately and replace the files in `static/swagger-ui`.
-
-## Project Documents
-
-- `CONTRIBUTING.md` explains how to report issues and contribute changes.
-- `CODE_OF_CONDUCT.md` describes expected community behavior.
-- `LICENSE.md` contains the MIT license.
 
 ## Examples Included
 
