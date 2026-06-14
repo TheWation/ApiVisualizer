@@ -12,6 +12,7 @@ API Visualizer converts an exported `swagger.json` or `openapi.json` file, or a 
 - Embeds the API specification inside the generated HTML file.
 - Copies Swagger UI JavaScript, CSS, source maps, licenses, and favicons into each generated output folder.
 - Provides Swagger UI features such as endpoint browsing, schema inspection, filtering, deep links, authorization persistence, and `Try it out`.
+- Can export a deduplicated TXT list of parameter and request-body property names for mass assignment review.
 - Supports overriding the API server URL so interactive requests can target the correct environment.
 - Uses only Python's standard library at runtime.
 
@@ -53,23 +54,37 @@ Override the server URL used by Swagger UI's `Try it out` requests:
 python ApiVisualizer.py -i openapi.json --server-url https://api.example.com/v1 --overwrite
 ```
 
+Export only parameter names to a TXT file, without generating HTML:
+
+```bash
+python ApiVisualizer.py -i openapi.json --params --overwrite
+```
+
+The parameter list will be available at:
+
+```text
+output/<input-or-host-name>/params.txt
+```
+
 The generated file will be available at:
 
 ```text
-output/<input-or-url-name>/index.html
+output/<input-or-host-name>/index.html
 ```
 
 Each generated folder also contains:
 
 ```text
-output/<input-or-url-name>/assets/swagger-ui/
+output/<input-or-host-name>/assets/swagger-ui/
 ```
 
 ## Notes
 
 - Remote URLs must return a JSON Swagger/OpenAPI document.
 - Use `-i/--input` for local files and `-u/--url` for remote JSON URLs. Exactly one source is required.
-- `--name` controls the generated folder name. If you pass `api-docs.html`, the folder will still be named `api-docs`.
+- Use `-p/--params` when you only need names from path/query/header/cookie/form/body parameters and request body schema properties. In this mode, HTML is not generated.
+- By default, local file output folders use the input filename and URL output folders use the URL hostname.
+- `--name` overrides the generated folder name. If you pass `api-docs.html`, the folder will still be named `api-docs`.
 - For OpenAPI 3.x documents, `--server-url` replaces the top-level `servers` list with the provided URL.
 - For Swagger 2.0 documents, `--server-url` must be an absolute URL such as `https://api.example.com/v1`; it is converted into `schemes`, `host`, and `basePath`.
 - If your API requires authentication, use the `Authorize` button in the generated Swagger UI page.

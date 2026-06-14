@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 STATIC_ASSETS_DIR = PROJECT_ROOT / "static" / "swagger-ui"
 OUTPUT_ASSETS_DIRNAME = "assets"
 SWAGGER_UI_ASSETS_DIRNAME = "swagger-ui"
+JSON_POINTER_ESCAPE = {"~1": "/", "~0": "~"}
 
 
 def logo() -> str:
@@ -155,6 +156,144 @@ def summarize_spec(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def decode_json_pointer_token(token: str) -> str:
+    for escaped, value in JSON_POINTER_ESCAPE.items():
+        token = token.replace(escaped, value)
+    return token
+
+
+def resolve_ref(spec: dict[str, Any], ref: str) -> Any:
+    if not ref.startswith("#/"):
+        return None
+
+    current: Any = spec
+    for raw_token in ref[2:].split("/"):
+        token = decode_json_pointer_token(raw_token)
+        if not isinstance(current, dict) or token not in current:
+            return None
+        current = current[token]
+    return current
+
+
+def resolve_object(spec: dict[str, Any], value: Any) -> Any:
+    if isinstance(value, dict) and isinstance(value.get("$ref"), str):
+        resolved = resolve_ref(spec, value["$ref"])
+        return resolved if resolved is not None else value
+    return value
+
+
+def collect_schema_property_names(
+    spec: dict[str, Any],
+    schema: Any,
+    names: set[str],
+    visited_refs: set[str] | None = None,
+) -> None:
+    if visited_refs is None:
+        visited_refs = set()
+    if not isinstance(schema, dict):
+        return
+
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        if ref in visited_refs:
+            return
+        visited_refs.add(ref)
+        resolved = resolve_ref(spec, ref)
+        collect_schema_property_names(spec, resolved, names, visited_refs)
+        return
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for property_name, property_schema in properties.items():
+            if isinstance(property_name, str):
+                names.add(property_name)
+            collect_schema_property_names(spec, property_schema, names, visited_refs)
+
+    for composition_key in ("allOf", "anyOf", "oneOf"):
+        variants = schema.get(composition_key)
+        if isinstance(variants, list):
+            for variant in variants:
+                collect_schema_property_names(spec, variant, names, visited_refs)
+
+    items = schema.get("items")
+    if isinstance(items, dict):
+        collect_schema_property_names(spec, items, names, visited_refs)
+
+    additional_properties = schema.get("additionalProperties")
+    if isinstance(additional_properties, dict):
+        collect_schema_property_names(spec, additional_properties, names, visited_refs)
+
+
+def collect_request_body_parameter_names(spec: dict[str, Any], request_body: Any, names: set[str]) -> None:
+    request_body = resolve_object(spec, request_body)
+    if not isinstance(request_body, dict):
+        return
+
+    content = request_body.get("content")
+    if isinstance(content, dict):
+        for media_type in content.values():
+            if isinstance(media_type, dict):
+                collect_schema_property_names(spec, media_type.get("schema"), names)
+
+
+def collect_operation_parameter_names(spec: dict[str, Any], parameters: Any, names: set[str]) -> None:
+    if not isinstance(parameters, list):
+        return
+
+    for parameter in parameters:
+        parameter = resolve_object(spec, parameter)
+        if not isinstance(parameter, dict):
+            continue
+
+        name = parameter.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+
+        schema = parameter.get("schema")
+        if isinstance(schema, dict):
+            collect_schema_property_names(spec, schema, names)
+
+
+def extract_parameter_names(spec: dict[str, Any]) -> list[str]:
+    names: set[str] = set()
+    paths = spec.get("paths", {})
+    if not isinstance(paths, dict):
+        return []
+
+    for path_item in paths.values():
+        if not isinstance(path_item, dict):
+            continue
+
+        collect_operation_parameter_names(spec, path_item.get("parameters"), names)
+
+        for method, operation in path_item.items():
+            if method.lower() not in HTTP_METHODS or not isinstance(operation, dict):
+                continue
+
+            collect_operation_parameter_names(spec, operation.get("parameters"), names)
+            collect_request_body_parameter_names(spec, operation.get("requestBody"), names)
+
+            # Swagger 2.0 body/form parameters keep schemas under operation parameters.
+            parameters = operation.get("parameters")
+            if isinstance(parameters, list):
+                for parameter in parameters:
+                    parameter = resolve_object(spec, parameter)
+                    if isinstance(parameter, dict):
+                        collect_schema_property_names(spec, parameter.get("schema"), names)
+
+    return sorted(names, key=str.casefold)
+
+
+def write_parameter_names(names: list[str], output_folder: Path, overwrite: bool) -> Path:
+    output_path = output_folder / "params.txt"
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"Output file already exists: {output_path}. Use --overwrite to replace it.")
+
+    output_folder.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(names) + ("\n" if names else ""), encoding="utf-8")
+    return output_path.resolve()
+
+
 def json_for_script(value: dict[str, Any]) -> str:
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return (
@@ -185,7 +324,7 @@ def apply_server_url(spec: dict[str, Any], server_url: str | None) -> None:
 def safe_stem(value: str) -> str:
     if is_url(value):
         parsed = urlparse(value)
-        name = Path(unquote(parsed.path)).stem or parsed.netloc
+        name = parsed.hostname or parsed.netloc
     else:
         name = Path(value).stem
 
@@ -459,7 +598,13 @@ def parse_args() -> argparse.Namespace:
     source.add_argument("-i", "--input", dest="input_file", help="Path to swagger.json/openapi.json")
     source.add_argument("-u", "--url", help="HTTP/HTTPS URL to swagger.json/openapi.json")
     parser.add_argument("-o", "--output-dir", type=Path, default=Path("output"), help="Directory for generated HTML")
-    parser.add_argument("-n", "--name", help="Output folder name. Defaults to the input filename or URL filename")
+    parser.add_argument("-n", "--name", help="Output folder name. Defaults to the input filename or URL hostname")
+    parser.add_argument(
+        "-p",
+        "--params",
+        action="store_true",
+        help="Write a deduplicated parameter-name list to a TXT file instead of generating HTML",
+    )
     parser.add_argument(
         "--server-url",
         help="Override the API server/base URL used by Try it out, for example https://api.example.com/v1",
@@ -473,10 +618,19 @@ def main() -> int:
         args = parse_args()
         spec, source_name, source_value = resolve_source(args)
         doc_type, version = detect_document_type(spec)
-        apply_server_url(spec, args.server_url)
 
         output_name = make_output_folder_name(source_value, args.name)
         output_folder = (args.output_dir / output_name).resolve()
+        if args.params:
+            names = extract_parameter_names(spec)
+            output_path = write_parameter_names(names, output_folder, args.overwrite)
+            print(logo())
+            print(f"Generated parameter list: {output_path}")
+            print(f"Included {len(names)} unique parameter names.")
+            return 0
+
+        apply_server_url(spec, args.server_url)
+
         html_content = build_html(spec, source_name, doc_type, version)
         index_path = write_output(html_content, output_folder, args.overwrite)
 

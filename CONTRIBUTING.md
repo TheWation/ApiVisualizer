@@ -25,6 +25,7 @@ Please follow these steps:
 python -m py_compile ApiVisualizer.py
 python ApiVisualizer.py -i swagger.json --overwrite
 python ApiVisualizer.py -i openapi.json --overwrite
+python ApiVisualizer.py -i openapi.json --params --overwrite
 ```
 
 5. Submit a pull request with a short explanation of the change and any testing performed.
